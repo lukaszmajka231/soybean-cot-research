@@ -1,1 +1,4 @@
 .DS_Store
+cot_price_merged.csv
+summary_statistics.csv
+*.png
