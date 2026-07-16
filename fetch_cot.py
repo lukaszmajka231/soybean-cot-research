@@ -46,6 +46,9 @@ numeric_cols = [
 df_clean[numeric_cols] = df_clean[numeric_cols].apply(pd.to_numeric)
 
 df_clean["prod_merc_net"] = df_clean["prod_merc_positions_long"] - df_clean["prod_merc_positions_short"]
+
+df_clean["commercial_net_pct_oi"] = df_clean["prod_merc_net"] / df_clean["open_interest_all"]
+print(df_clean["commercial_net_pct_oi"].describe())
 df_clean["swap_net"] = df_clean["swap_positions_long_all"] - df_clean["swap__positions_short_all"]
 df_clean["m_money_net"] = df_clean["m_money_positions_long_all"] - df_clean["m_money_positions_short_all"]
 df_clean["other_rept_net"] = df_clean["other_rept_positions_long"] - df_clean["other_rept_positions_short"]
@@ -58,8 +61,7 @@ df_price.columns = df_price.columns.get_level_values(0)
 
 full_dataset = df_clean.join(df_price, how="inner")
 
-print(full_dataset.shape)
-print(full_dataset.head())
+
 
 full_dataset.to_csv("cot_price_merged.csv")
 
@@ -85,4 +87,6 @@ ax2.legend(loc="upper right")
 
 
 plt.show()
+
+
 
