@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
+from scipy.stats import fisher_exact
 
 
 COT_URL = "https://publicreporting.cftc.gov/resource/72hh-3qpy.json"
@@ -80,11 +81,23 @@ df_clean["other_rept_net"] = df_clean["other_rept_positions_long"] - df_clean["o
 
 df_price = yf.download("ZS=F", start="2006-01-01")
 
-df_clean = df_clean.set_index("report_date_as_yyyy_mm_dd")
+df_clean["publish_date"] = df_clean["report_date_as_yyyy_mm_dd"] + pd.Timedelta(days=3)
 
 df_price.columns = df_price.columns.get_level_values(0)
+df_price = df_price.reset_index().rename(columns={"Date": "price_date"})
 
-full_dataset = df_clean.join(df_price, how="inner")
+df_clean = df_clean.sort_values("publish_date")
+df_price = df_price.sort_values("price_date")
+
+full_dataset = pd.merge_asof(
+    df_clean,
+    df_price,
+    left_on="publish_date",
+    right_on="price_date",
+    direction="forward"
+)
+
+full_dataset = full_dataset.set_index("publish_date")
 
 price_window = 52
 full_dataset["rolling_mean_price"] = full_dataset["Close"].rolling(window=price_window, center=False).mean()
@@ -128,6 +141,7 @@ results_df = pd.DataFrame(results)
 print(results_df)
 print("Hit rate:", results_df["hit"].mean())
 print("Usable events:", len(results_df))
+print(results_df["hit"].value_counts())
 
 
 
@@ -155,32 +169,49 @@ baseline_df = pd.DataFrame(all_results)
 print("Baseline hit rate:", baseline_df["hit"].mean())
 print("Baseline sample size:", len(baseline_df))
 
+event_hits = results_df["hit"].sum()
+event_misses = len(results_df) - event_hits
+
+baseline_hits = baseline_df["hit"].sum()
+baseline_misses = len(baseline_df) - baseline_hits
+
+contingency_table = [
+    [event_hits, event_misses],
+    [baseline_hits, baseline_misses]
+]
+
+odds_ratio, p_value = fisher_exact(contingency_table)
+
+print("Contingency table (event vs baseline):", contingency_table)
+print("Odds ratio:", odds_ratio)
+print("P-value:", p_value)
 
 
 
 
 
-full_dataset.to_csv("cot_price_merged.csv")
 
-summary_stats = full_dataset.describe()
+#full_dataset.to_csv("cot_price_merged.csv")
 
-summary_stats.to_csv("summary_statistics.csv")
+#summary_stats = full_dataset.describe()
 
-fig, ax1 = plt.subplots(figsize=(14, 6))
+#summary_stats.to_csv("summary_statistics.csv")
 
-ax1.plot(full_dataset.index, full_dataset["Close"], color="black", label="ZS=F Price")
-ax1.set_ylabel("Price")
-ax1.set_xlabel("Date")
+#fig, ax1 = plt.subplots(figsize=(14, 6))
 
-ax2 = ax1.twinx()
-ax2.plot(full_dataset.index, full_dataset["prod_merc_net"], color="tab:blue", alpha=0.6, label="Producer/Merchant Net Position")
-ax2.set_ylabel("Net Position (contracts)")
+#ax1.plot(full_dataset.index, full_dataset["Close"], color="black", label="ZS=F Price")
+#ax1.set_ylabel("Price")
+#ax1.set_xlabel("Date")
 
-plt.title("Soybean Price vs. Producer/Merchant Net Position")
-fig.tight_layout()
-plt.savefig("price_vs_net_position.png")
-ax1.legend(loc="upper left")
-ax2.legend(loc="upper right")
+#ax2 = ax1.twinx()
+#ax2.plot(full_dataset.index, full_dataset["prod_merc_net"], color="tab:blue", alpha=0.6, label="Producer/Merchant Net Position")
+#ax2.set_ylabel("Net Position (contracts)")
+
+#plt.title("Soybean Price vs. Producer/Merchant Net Position")
+#fig.tight_layout()
+#plt.savefig("price_vs_net_position.png")
+#ax1.legend(loc="upper left")
+#ax2.legend(loc="upper right")
 
 
 #plt.show()
