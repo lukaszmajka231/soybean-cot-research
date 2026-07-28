@@ -47,8 +47,33 @@ df_clean[numeric_cols] = df_clean[numeric_cols].apply(pd.to_numeric)
 
 df_clean["prod_merc_net"] = df_clean["prod_merc_positions_long"] - df_clean["prod_merc_positions_short"]
 
+
+
+
+
+
 df_clean["commercial_net_pct_oi"] = df_clean["prod_merc_net"] / df_clean["open_interest_all"]
-print(df_clean["commercial_net_pct_oi"].describe())
+
+window = 52
+
+rolling_mean = df_clean["commercial_net_pct_oi"].rolling(window=window, center=False).mean()
+rolling_std = df_clean["commercial_net_pct_oi"].rolling(window=window, center=False).std()
+
+
+df_clean["positioning_zscore"] = (df_clean["commercial_net_pct_oi"] - rolling_mean) / rolling_std
+
+threshold = 2.5
+
+df_clean["is_extreme"] = df_clean["positioning_zscore"].abs() > threshold
+df_clean["is_new_event"] = df_clean["is_extreme"] & (~df_clean["is_extreme"].shift(1).fillna(False))
+
+
+print("Total extreme weeks:", df_clean["is_extreme"].sum())
+print("Distinct events (after collapsing):", df_clean["is_new_event"].sum())
+
+
+
+
 df_clean["swap_net"] = df_clean["swap_positions_long_all"] - df_clean["swap__positions_short_all"]
 df_clean["m_money_net"] = df_clean["m_money_positions_long_all"] - df_clean["m_money_positions_short_all"]
 df_clean["other_rept_net"] = df_clean["other_rept_positions_long"] - df_clean["other_rept_positions_short"]
@@ -60,6 +85,78 @@ df_clean = df_clean.set_index("report_date_as_yyyy_mm_dd")
 df_price.columns = df_price.columns.get_level_values(0)
 
 full_dataset = df_clean.join(df_price, how="inner")
+
+price_window = 52
+full_dataset["rolling_mean_price"] = full_dataset["Close"].rolling(window=price_window, center=False).mean()
+
+full_dataset["price_change"] = full_dataset["Close"].diff()
+full_dataset["rolling_std_price_change"] = full_dataset["price_change"].rolling(window=price_window, center=False).std()
+
+event_dates = full_dataset[full_dataset["is_new_event"]].index
+N = 12
+k = 1
+
+event_dates = full_dataset[full_dataset["is_new_event"]].index
+
+results = []
+
+for event_date in event_dates:
+    event_loc = full_dataset.index.get_loc(event_date)
+    
+    if event_loc + N >= len(full_dataset):
+        continue
+    
+    frozen_mean = full_dataset["rolling_mean_price"].iloc[event_loc]
+    price_at_event = full_dataset["Close"].iloc[event_loc]
+    price_at_future = full_dataset["Close"].iloc[event_loc + N]
+    vol_at_event = full_dataset["rolling_std_price_change"].iloc[event_loc]
+    
+    gap_at_event = abs(price_at_event - frozen_mean)
+    gap_at_future = abs(price_at_future - frozen_mean)
+    distance_closed = gap_at_event - gap_at_future
+    hit = distance_closed > (k * vol_at_event)
+    
+    results.append({
+        "event_date": event_date,
+        "distance_closed": distance_closed,
+        "threshold": k * vol_at_event,
+        "hit": hit
+    })
+
+results_df = pd.DataFrame(results)
+
+print(results_df)
+print("Hit rate:", results_df["hit"].mean())
+print("Usable events:", len(results_df))
+
+
+
+all_results = []
+
+for i in range(len(full_dataset) - N):
+    frozen_mean = full_dataset["rolling_mean_price"].iloc[i]
+    price_now = full_dataset["Close"].iloc[i]
+    price_future = full_dataset["Close"].iloc[i + N]
+    vol_now = full_dataset["rolling_std_price_change"].iloc[i]
+    
+    # skip rows where rolling calculations haven't kicked in yet (NaN)
+    if pd.isna(frozen_mean) or pd.isna(vol_now):
+        continue
+    
+    gap_now = abs(price_now - frozen_mean)
+    gap_future = abs(price_future - frozen_mean)
+    distance_closed = gap_now - gap_future
+    hit = distance_closed > (k * vol_now)
+    
+    all_results.append({"hit": hit})
+
+baseline_df = pd.DataFrame(all_results)
+
+print("Baseline hit rate:", baseline_df["hit"].mean())
+print("Baseline sample size:", len(baseline_df))
+
+
+
 
 
 
@@ -86,7 +183,7 @@ ax1.legend(loc="upper left")
 ax2.legend(loc="upper right")
 
 
-plt.show()
+#plt.show()
 
 
 
