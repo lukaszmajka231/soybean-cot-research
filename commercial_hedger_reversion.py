@@ -13,8 +13,36 @@ grains = [
     {"label": "Wheat", "market_names": ["WHEAT - CHICAGO BOARD OF TRADE", "WHEAT-SRW - CHICAGO BOARD OF TRADE"], "ticker": "ZW=F"},
 ]
 
+def run_hit_test(full_dataset, event_dates, N, k):
+    results = []
 
-def run_grain(label, market_names, ticker):
+    for event_date in event_dates:
+        event_loc = full_dataset.index.get_loc(event_date)
+
+        if event_loc + N >= len(full_dataset):
+            continue
+
+        frozen_mean = full_dataset["rolling_mean_price"].iloc[event_loc]
+        price_at_event = full_dataset["Close"].iloc[event_loc]
+        price_at_future = full_dataset["Close"].iloc[event_loc + N]
+        vol_at_event = full_dataset["rolling_std_price_change"].iloc[event_loc]
+        if pd.isna(frozen_mean) or pd.isna(vol_at_event):
+            continue
+        gap_at_event = abs(price_at_event - frozen_mean)
+        gap_at_future = abs(price_at_future - frozen_mean)
+        distance_closed = gap_at_event - gap_at_future
+        hit = distance_closed > (k * vol_at_event)
+
+        results.append({
+            "event_date": event_date,
+            "distance_closed": distance_closed,
+            "hit_threshold": k * vol_at_event,
+            "hit": hit
+        })
+
+    return pd.DataFrame(results)
+
+def run_grain(label, market_names, ticker, threshold=2.5, N=12, k=1):
     names_clause = ", ".join(f"'{name}'" for name in market_names)
     where_clause = f"market_and_exchange_names IN({names_clause})"
 
@@ -46,7 +74,6 @@ def run_grain(label, market_names, ticker):
 
     df_clean["report_date_as_yyyy_mm_dd"] = pd.to_datetime(df_clean["report_date_as_yyyy_mm_dd"])
 
-
     df_clean = df_clean.drop_duplicates(subset="report_date_as_yyyy_mm_dd", keep="first")
 
     numeric_cols = [
@@ -68,8 +95,6 @@ def run_grain(label, market_names, ticker):
     rolling_std = df_clean["commercial_net_pct_oi"].rolling(window=window, center=False).std()
 
     df_clean["positioning_zscore"] = (df_clean["commercial_net_pct_oi"] - rolling_mean) / rolling_std
-
-    threshold = 2.5
 
     df_clean["is_extreme"] = df_clean["positioning_zscore"].abs() > threshold
     df_clean["is_new_event"] = df_clean["is_extreme"] & (~df_clean["is_extreme"].shift(1).fillna(False).infer_objects(copy=False))
@@ -100,42 +125,24 @@ def run_grain(label, market_names, ticker):
 
     price_window = 52
     full_dataset["rolling_mean_price"] = full_dataset["Close"].rolling(window=price_window, center=False).mean()
+    full_dataset["rolling_std_price"] = full_dataset["Close"].rolling(window=price_window, center=False).std()
 
     full_dataset["price_change"] = full_dataset["Close"].diff()
     full_dataset["rolling_std_price_change"] = full_dataset["price_change"].rolling(window=price_window, center=False).std()
 
-    N = 12
-    k = 1
+    full_dataset["price_zscore"] = (full_dataset["Close"] - full_dataset["rolling_mean_price"]) / full_dataset["rolling_std_price"]
+
+    full_dataset["is_price_extreme"] = full_dataset["price_zscore"].abs() > threshold
+    full_dataset["is_new_price_event"] = full_dataset["is_price_extreme"] & (~full_dataset["is_price_extreme"].shift(1).fillna(False).infer_objects(copy=False))
+
+    price_zscore_at_positioning_events = full_dataset.loc[full_dataset["is_new_event"], "price_zscore"]
+    print(f"{label}: avg abs price z-score at positioning event weeks = {price_zscore_at_positioning_events.abs().mean():.2f}")
 
     event_dates = full_dataset[full_dataset["is_new_event"]].index
+    price_event_dates = full_dataset[full_dataset["is_new_price_event"]].index
 
-    results = []
-
-    for event_date in event_dates:
-        event_loc = full_dataset.index.get_loc(event_date)
-
-        if event_loc + N >= len(full_dataset):
-            continue
-
-        frozen_mean = full_dataset["rolling_mean_price"].iloc[event_loc]
-        price_at_event = full_dataset["Close"].iloc[event_loc]
-        price_at_future = full_dataset["Close"].iloc[event_loc + N]
-        vol_at_event = full_dataset["rolling_std_price_change"].iloc[event_loc]
-        if pd.isna(frozen_mean) or pd.isna(vol_at_event):
-            continue
-        gap_at_event = abs(price_at_event - frozen_mean)
-        gap_at_future = abs(price_at_future - frozen_mean)
-        distance_closed = gap_at_event - gap_at_future
-        hit = distance_closed > (k * vol_at_event)
-
-        results.append({
-            "event_date": event_date,
-            "distance_closed": distance_closed,
-            "hit_threshold": k * vol_at_event,
-            "hit": hit
-        })
-
-    results_df = pd.DataFrame(results)
+    results_df = run_hit_test(full_dataset, event_dates, N, k)
+    price_results_df = run_hit_test(full_dataset, price_event_dates, N, k)
 
     all_baseline_results = []
 
@@ -170,13 +177,29 @@ def run_grain(label, market_names, ticker):
 
     odds_ratio, p_value = fisher_exact(contingency_table)
 
+    price_event_hits = price_results_df["hit"].sum()
+    price_event_misses = len(price_results_df) - price_event_hits
+
+    price_contingency_table = [
+        [price_event_hits, price_event_misses],
+        [baseline_hits, baseline_misses]
+    ]
+
+    price_odds_ratio, price_p_value = fisher_exact(price_contingency_table)
+
     results_summary = {
         "commodity": label,
+        "threshold": threshold,
+        "holding_period_weeks": N,
         "usable_events": len(results_df),
         "event_hit_rate": results_df["hit"].mean(),
         "baseline_hit_rate": baseline_df["hit"].mean(),
         "odds_ratio": odds_ratio,
         "p_value": p_value,
+        "price_usable_events": len(price_results_df),
+        "price_event_hit_rate": price_results_df["hit"].mean(),
+        "price_odds_ratio": price_odds_ratio,
+        "price_p_value": price_p_value,
     }
 
     return results_summary
@@ -189,5 +212,22 @@ for grain in grains:
     all_results.append(result)
 
 summary_df = pd.DataFrame(all_results)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
 print(summary_df)
 summary_df.to_csv("grain_significance_summary.csv", index=False)
+
+thresholds_to_test = [2.0, 2.5, 3.0]
+holding_periods_to_test = [8, 12, 16]
+
+sweep_results = []
+for grain in grains:
+    for threshold in thresholds_to_test:
+        for N in holding_periods_to_test:
+            print(f"Sweeping {grain['label']}, threshold={threshold}, N={N}...")
+            result = run_grain(grain["label"], grain["market_names"], grain["ticker"], threshold=threshold, N=N)
+            sweep_results.append(result)
+
+sweep_df = pd.DataFrame(sweep_results)
+print(sweep_df)
+sweep_df.to_csv("parameter_sweep_summary.csv", index=False)
