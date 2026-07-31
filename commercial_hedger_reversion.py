@@ -40,7 +40,7 @@ def run_hit_test(full_dataset, event_dates, N, k):
             "hit": hit
         })
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(results, columns=["event_date", "distance_closed", "hit_threshold", "hit"])
 
 def run_grain(label, market_names, ticker, threshold=2.5, N=12, k=1):
     names_clause = ", ".join(f"'{name}'" for name in market_names)
@@ -135,8 +135,6 @@ def run_grain(label, market_names, ticker, threshold=2.5, N=12, k=1):
     full_dataset["is_price_extreme"] = full_dataset["price_zscore"].abs() > threshold
     full_dataset["is_new_price_event"] = full_dataset["is_price_extreme"] & (~full_dataset["is_price_extreme"].shift(1).fillna(False).infer_objects(copy=False))
 
-    price_zscore_at_positioning_events = full_dataset.loc[full_dataset["is_new_event"], "price_zscore"]
-    print(f"{label}: avg abs price z-score at positioning event weeks = {price_zscore_at_positioning_events.abs().mean():.2f}")
 
     event_dates = full_dataset[full_dataset["is_new_event"]].index
     price_event_dates = full_dataset[full_dataset["is_new_price_event"]].index
@@ -146,7 +144,7 @@ def run_grain(label, market_names, ticker, threshold=2.5, N=12, k=1):
 
     all_baseline_results = []
 
-    for i in range(len(full_dataset) - N):
+    for i in range(0, len(full_dataset) - N, N):
         frozen_mean = full_dataset["rolling_mean_price"].iloc[i]
         price_now = full_dataset["Close"].iloc[i]
         price_future = full_dataset["Close"].iloc[i + N]
